@@ -12,6 +12,7 @@ import (
 )
 
 const urlPrefix = "/rest"
+const proxyPath = "proxyPath"
 
 var servers = map[string]string{"http://localhost:3002": "/temp", "http://localhost:3004": "/other"}
 
@@ -27,14 +28,14 @@ func serveReverseProxy(target string, c *gin.Context) {
 	// create the reverse proxy
 	proxy := httputil.NewSingleHostReverseProxy(remote)
 
-	logRequestPayload(remote.Host, c.Param("proxyPath"))
+	logRequestPayload(remote.Host, c.Param(proxyPath))
 
 	proxy.Director = func(req *http.Request) {
 		req.Header = c.Request.Header
 		req.Host = remote.Host
 		req.URL.Scheme = remote.Scheme
 		req.URL.Host = remote.Host
-		req.URL.Path = c.Param("proxyPath")
+		req.URL.Path = c.Param(proxyPath)
 	}
 
 	// Note that ServeHttp is non blocking and uses a go routine under the hood
@@ -46,7 +47,7 @@ func logRequestPayload(host, path string) {
 	log.Printf("proxy_url: %s%s\n", host, path)
 }
 
-// Balance returns one of the servers based using round-robin algorithm
+// Finds the server hosting the path prefix
 func getProxyURL(path string) (string, bool) {
 
 	for server, route := range servers {
@@ -60,9 +61,11 @@ func getProxyURL(path string) (string, bool) {
 // Given a request send it to the appropriate url
 func proxy(c *gin.Context) {
 
-	url, found := getProxyURL(c.Param("proxyPath"))
+	url, found := getProxyURL(c.Param(proxyPath))
 
 	if !found {
+		c.Data(http.StatusNotFound, "text/plain; charset=utf-8", []byte("404 route not found"))
+		c.Abort()
 		return
 	}
 
@@ -70,7 +73,20 @@ func proxy(c *gin.Context) {
 }
 
 func serverPaths(c *gin.Context) {
-	c.JSON(http.StatusOK, servers)
+
+	type Endpoint struct {
+		URL    string `json:"url"`
+		Method string `json:"method"`
+	}
+
+	links := make([]Endpoint, 0)
+	for _, path := range servers {
+		links = append(links, Endpoint{URL: fmt.Sprintf("https://%s%s", c.Request.Host, path), Method: "GET"})
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"links": links,
+	})
 }
 
 func main() {
@@ -80,7 +96,7 @@ func main() {
 	r.GET(urlPrefix, serverPaths)
 
 	//Create a catchall route
-	r.Any(fmt.Sprint(urlPrefix, "/*proxyPath"), proxy)
+	r.Any(fmt.Sprint(urlPrefix, "/*", proxyPath), proxy)
 
 	r.Run()
 }
